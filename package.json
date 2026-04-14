@@ -1,0 +1,22 @@
+{
+  "name": "ar-youtubechat",
+  "version": "1.0.0",
+  "description": "YouTube Live Chat reader for Even Realities G1 AR glasses via MentraOS",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "auth": "ts-node src/auth.ts"
+  },
+  "dependencies": {
+    "@mentra/sdk": "^2.1.0",
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  }
+}
