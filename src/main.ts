@@ -29,6 +29,12 @@ const MAX_VISIBLE_LINES = 12;
 // Debounce rapid message bursts so we don't flood the bridge (ms).
 const FLUSH_DEBOUNCE_MS = 80;
 
+// Backend URL — set VITE_BACKEND_URL in .env for production (packaged .ehpk).
+// In dev, Vite proxies /api → localhost:3001 so the relative path works fine.
+const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL as string | undefined)
+  ? `${import.meta.env.VITE_BACKEND_URL as string}/api/events`
+  : '/api/events';
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface ChatMessage {
@@ -138,7 +144,7 @@ async function main(): Promise<void> {
   // ── SSE connection to Express backend ────────────────────────────────────
 
   function connectSSE(): void {
-    const evtSource = new EventSource('/api/events');
+    const evtSource = new EventSource(BACKEND_URL);
 
     evtSource.onmessage = (e: MessageEvent<string>) => {
       let data: Record<string, unknown>;
