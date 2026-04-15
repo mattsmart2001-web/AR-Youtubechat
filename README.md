@@ -1,20 +1,18 @@
-# AR YouTube Live Chat — Even Realities G1
+# AR YouTube Live Chat — Even Realities G2
 
-Streams your YouTube live chat to your **Even Realities G1 AR glasses** in real time. Messages appear one at a time as a scrolling ticker on the lens display.
+Streams your YouTube live chat to your **Even Realities G2 AR glasses** in real time. Messages appear one at a time on the lens display.
 
 ```
-YouTube Live Chat  →  Node.js server  →  MentraOS (phone)  →  G1 glasses
+YouTube Live Chat  →  Express backend  →  Browser WebView  →  Even Hub bridge  →  G2 glasses
 ```
 
 ---
 
 ## How it works
 
-- Polls the YouTube Live Chat API every ~3–5 s (rate limited by Google)
-- New messages are queued and sent to the glasses one at a time, every 5 s
-- Long messages are word-wrapped to fit the G1's ~40-character display width
-- Automatically detects your active live broadcast — no manual config needed
-- If no stream is live, it retries every 30 s and shows a status message on the glasses
+- An **Express backend** polls the YouTube Live Chat API every ~3–5 s and broadcasts new messages over a Server-Sent Events (SSE) stream
+- A **Vite web frontend** connects to the Even Hub bridge (injected by the Even Realities phone app) and receives messages from the backend
+- Messages are queued and displayed on the glasses one at a time, every 5 s, with word-wrap for the G2's 576×288px display
 
 ---
 
@@ -23,8 +21,9 @@ YouTube Live Chat  →  Node.js server  →  MentraOS (phone)  →  G1 glasses
 | Requirement | Notes |
 |---|---|
 | Node.js 18+ | `node --version` to check |
-| Even Realities G1 glasses | Paired to your phone |
-| MentraOS app on your phone | Free — [mentra.glass](https://mentra.glass) |
+| Even Realities G2 glasses | Paired to your iPhone |
+| Even Realities app on iPhone | Free — [evenrealities.com](https://evenrealities.com) |
+| Even Hub developer account | Free — [hub.evenrealities.com](https://hub.evenrealities.com) |
 | Google Cloud project | Free tier is fine |
 | Active YouTube channel | Must be enabled for live streaming |
 
@@ -32,49 +31,41 @@ YouTube Live Chat  →  Node.js server  →  MentraOS (phone)  →  G1 glasses
 
 ## Part 1 — Google Cloud setup (YouTube API)
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create a new project (or use an existing one).
+1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create or select a project.
 
 2. Enable the **YouTube Data API v3**:
    - Navigate to **APIs & Services → Library**
-   - Search for "YouTube Data API v3" → click **Enable**
+   - Search "YouTube Data API v3" → **Enable**
 
 3. Create OAuth 2.0 credentials:
-   - Go to **APIs & Services → Credentials → Create Credentials → OAuth client ID**
+   - **APIs & Services → Credentials → Create Credentials → OAuth client ID**
    - Application type: **Desktop app**
-   - Name it anything (e.g. "AR YouTube Chat")
-   - Click **Create**
+   - Click **Create**, copy your **Client ID** and **Client Secret**
 
-4. Copy your **Client ID** and **Client Secret** — you'll need these shortly.
-
-5. Add the redirect URI:
-   - Click your new credential to edit it
+4. Add the redirect URI:
+   - Edit your new credential
    - Under **Authorised redirect URIs**, add: `http://localhost:3001/callback`
-   - Click **Save**
+   - **Save**
 
-6. Configure the OAuth consent screen (if prompted):
+5. Configure the OAuth consent screen:
    - **APIs & Services → OAuth consent screen**
-   - User type: **External**
-   - Fill in app name and your email
+   - User type: **External**, fill in app name and your email
    - Add scope: `https://www.googleapis.com/auth/youtube.readonly`
-   - Add your YouTube account email as a **Test user**
+   - Add your YouTube account as a **Test user**
 
 ---
 
-## Part 2 — MentraOS setup
+## Part 2 — Even Hub setup (G2 app registration)
 
-1. Install the **MentraOS** app on your phone and pair it to your G1 glasses.
+1. Sign in at [hub.evenrealities.com](https://hub.evenrealities.com).
 
-2. Go to [console.mentra.glass](https://console.mentra.glass) and sign in.
+2. Create a new app and set the **App URL** to where your frontend will be served:
+   - **Development (same Wi-Fi):** `http://YOUR_LOCAL_IP:5173`
+   - **Anywhere (recommended):** run `ngrok http 5173` and paste the `https://` URL
 
-3. Create a new app:
-   - Click **New App**
-   - Choose a **Package Name** in reverse-domain format, e.g. `com.yourname.ytchat`
-   - Set the server URL to your machine's address (see note below)
-   - Save and copy your **API Key**
+3. Save the app — you don't need an API key, Even Hub uses the URL directly.
 
-> **Server URL note:** MentraOS needs to reach your Node.js server over the network.
-> - On the same Wi-Fi: use your local IP, e.g. `http://192.168.1.x:3000`
-> - From anywhere: use [ngrok](https://ngrok.com) — run `ngrok http 3000` and paste the `https://` URL
+> The Even Realities iPhone app will open your URL in an embedded WebView and inject the `EvenAppBridge` into the page, which your frontend uses to talk to the glasses.
 
 ---
 
@@ -94,13 +85,12 @@ npm install
 cp .env.example .env
 ```
 
-Open `.env` and fill in all four values:
+Fill in `.env`:
 
 ```env
 YOUTUBE_CLIENT_ID=your_client_id_here
 YOUTUBE_CLIENT_SECRET=your_client_secret_here
-MENTRAOS_API_KEY=your_mentraos_api_key_here
-MENTRAOS_PACKAGE_NAME=com.yourname.ytchat
+PORT=3001
 ```
 
 ### 3. Authorise YouTube (one time only)
@@ -109,46 +99,64 @@ MENTRAOS_PACKAGE_NAME=com.yourname.ytchat
 npm run auth
 ```
 
-This opens a browser window asking you to sign in with your YouTube account. After approving, a `.tokens.json` file is saved locally. You won't need to do this again unless you revoke access.
+Opens a browser window to sign in with your YouTube account. After approving, `.tokens.json` is saved locally — you won't need to do this again.
 
-### 4. Start the server
+### 4. Start the app
 
 ```bash
 npm run dev
 ```
 
-You should see:
-
-```
-[App] Server listening on port 3000
-[App] Package: com.yourname.ytchat
-```
+This starts two processes concurrently:
+- **Backend** on `http://localhost:3001` — polls YouTube and streams chat via SSE
+- **Frontend** on `http://localhost:5173` — Vite dev server with Even Hub bridge
 
 ### 5. Enable the app on your glasses
 
-- Open MentraOS on your phone
-- Go to the App Store / My Apps section
-- Find your app and enable it
-- The glasses should display **"YT Live Chat — Connecting..."**
+- Open the Even Realities app on your iPhone
+- Navigate to your registered app and open it
+- The glasses should display **"YT Live Chat — Waiting for stream..."**
 
 ### 6. Go live
 
-Start your YouTube live stream. Within ~10 s the glasses will show **"YT Live Chat — Ready!"** and chat messages will begin appearing.
+Start your YouTube live stream. Within ~10 s the glasses will show **"YT Live Chat — Live!"** and chat messages will begin appearing.
 
 ---
 
 ## Running in production
 
-To keep the server running persistently (e.g. on a home server or VPS):
+Build the frontend and serve everything from Express:
 
 ```bash
-# Build first
-npm run build
+npm run build        # builds Vite frontend to dist/
+NODE_ENV=production npm start   # Express serves dist/ + runs YouTube poller
+```
 
-# Run with pm2
+Point your Even Hub app URL to `http://YOUR_SERVER:3001`.
+
+To keep it running persistently:
+
+```bash
 npm install -g pm2
-pm2 start dist/index.js --name ar-ytchat
+pm2 start "NODE_ENV=production npm start" --name ar-ytchat
 pm2 save
+```
+
+---
+
+## Project structure
+
+```
+server/
+├── auth.ts      # One-time OAuth 2.0 flow — run via "npm run auth"
+├── youtube.ts   # Discovers active broadcast and polls live chat
+└── index.ts     # Express server — SSE endpoint + static serving
+src/
+├── index.html   # HTML entry point loaded by Even Realities WebView
+└── main.ts      # Even Hub bridge + message queue + glasses display
+vite.config.ts   # Dev server config — proxies /api to Express
+tsconfig.json         # Frontend (browser / ESNext)
+tsconfig.server.json  # Backend (Node.js / CommonJS)
 ```
 
 ---
@@ -158,27 +166,18 @@ pm2 save
 | Problem | Fix |
 |---|---|
 | `No saved tokens found` | Run `npm run auth` first |
-| `No active broadcast found` | Make sure your stream is **live** (not just scheduled). The app retries every 30 s. |
-| Glasses show nothing | Check MentraOS is connected and your app is enabled |
-| `403 insufficient permissions` | Re-run `npm run auth` and make sure `youtube.readonly` scope is granted |
-| Messages are delayed | Normal — YouTube's API enforces a minimum poll interval (~3–5 s) |
-
----
-
-## Project structure
-
-```
-src/
-├── auth.ts      # One-time OAuth 2.0 flow — run via "npm run auth"
-├── youtube.ts   # Discovers active broadcast and polls live chat
-├── ticker.ts    # Message queue with word-wrap; drains to glasses display
-└── index.ts     # MentraOS AppServer — ties everything together
-```
+| `No active broadcast found` | Make sure your stream is **live** (not just scheduled). Retries every 30 s automatically. |
+| Glasses show nothing | Check Even Realities app is open and your app URL is reachable from the phone |
+| Bridge never connects | The `EvenAppBridge` is only injected in the Even Realities app WebView — it won't appear in a regular browser |
+| `403 insufficient permissions` | Re-run `npm run auth` and ensure the `youtube.readonly` scope is granted |
+| Messages delayed | Normal — YouTube enforces a minimum ~3–5 s poll interval |
 
 ---
 
 ## Tech stack
 
-- **[`@mentra/sdk`](https://www.npmjs.com/package/@mentra/sdk)** — MentraOS SDK for Even Realities G1
+- **[`@evenrealities/even_hub_sdk`](https://www.npmjs.com/package/@evenrealities/even_hub_sdk)** — Even Hub bridge SDK for G2
 - **[`googleapis`](https://www.npmjs.com/package/googleapis)** — YouTube Data API v3 client
+- **[Express](https://expressjs.com)** — backend API + SSE stream
+- **[Vite](https://vitejs.dev)** — frontend dev server and bundler
 - **TypeScript / Node.js**
