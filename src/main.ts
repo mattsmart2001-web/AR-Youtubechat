@@ -1,25 +1,51 @@
+/**
+ * Even Realities G2 frontend — runs inside the Even Realities phone app WebView.
+ *
+ * Flow:
+ *   1. Connect to the Even Hub bridge (injected by the phone app)
+ *   2. Create the initial text container on the glasses
+ *   3. Open an SSE connection to the Express backend
+ *   4. Append each incoming message to a rolling display buffer — no delay
+ */
+
 import {
   waitForEvenAppBridge,
   TextContainerProperty,
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk';
 
-const CONTAINER_ID = 1;
-const CONTAINER_NAME = 'yt-chat';
-const DISPLAY_WIDTH = 576;
-const DISPLAY_HEIGHT = 288;
-const CHARS_PER_LINE = 46;
-const MAX_LINES = 5;
-const DISPLAY_DURATION_MS = 5000;
-const MAX_QUEUE = 50;
+// ── Display constants ──────────────────────────────────────────────────────
 
-interface ChatMessage { id: string; author: string; text: string; }
+const CONTAINER_ID = 1;
+const CONTAINER_NAME = 'yt-chat';  // max 16 chars
+const DISPLAY_WIDTH = 576;         // G2 full display width (px)
+const DISPLAY_HEIGHT = 288;        // G2 full display height (px)
+const CHARS_PER_LINE = 46;         // ~576px / ~12.5px per char at default font
+
+// How many lines fit on screen — tune this if text overflows or underlaps.
+// G2 is 288px tall; at ~21px/line with 4px padding ≈ 13 lines max.
+const MAX_VISIBLE_LINES = 12;
+
+// Debounce rapid message bursts so we don't flood the bridge (ms).
+const FLUSH_DEBOUNCE_MS = 80;
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+interface ChatMessage {
+  id: string;
+  author: string;
+  text: string;
+}
+
 type StreamStatus = 'idle' | 'searching' | 'live' | 'error';
 
-function wordWrap(text: string): string {
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function wordWrap(text: string): string[] {
   const words = text.split(' ');
   const lines: string[] = [];
   let current = '';
+
   for (const word of words) {
     const candidate = current ? `${current} ${word}` : word;
     if (candidate.length > CHARS_PER_LINE) {
@@ -30,10 +56,10 @@ function wordWrap(text: string): string {
     }
   }
   if (current) lines.push(current);
-  return lines.slice(0, MAX_LINES).join('\n');
+  return lines;
 }
 
-function formatMessage(msg: ChatMessage): string {
+function formatMessage(msg: ChatMessage): string[] {
   const author = msg.author.length > 20 ? `${msg.author.slice(0, 18)}..` : msg.author;
   return wordWrap(`${author}: ${msg.text}`);
 }
@@ -44,6 +70,8 @@ const STATUS_TEXT: Record<StreamStatus, string> = {
   live:      'YT Live Chat\nLive! Waiting for\nfirst message...',
   error:     'YT Live Chat\nBackend error.\nRetrying...',
 };
+
+// ── Main ───────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   console.log('[Bridge] Waiting for Even App Bridge...');
@@ -65,54 +93,70 @@ async function main(): Promise<void> {
   });
 
   await bridge.createStartUpPageContainer(1, [container]);
+  console.log('[Bridge] Container created');
 
-  async function setDisplay(text: string): Promise<void> {
+  // ── Rolling display buffer ───────────────────────────────────────────────
+
+  const displayLines: string[] = [];
+  let hasMessages = false;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function setDisplay(content: string): Promise<void> {
     await bridge.textContainerUpgrade(
       new TextContainerUpgrade({
         containerID: CONTAINER_ID,
         containerName: CONTAINER_NAME,
         contentOffset: 0,
         contentLength: 2000,
-        content: text,
+        content,
       }),
     );
   }
 
-  const queue: ChatMessage[] = [];
-  let ticking = false;
-
-  function tick(): void {
-    if (queue.length === 0) { ticking = false; return; }
-    ticking = true;
-    const msg = queue.shift()!;
-    setDisplay(formatMessage(msg)).catch((err) => console.error('[Bridge] Display error:', err));
-    setTimeout(tick, DISPLAY_DURATION_MS);
+  function scheduleFlush(): void {
+    if (flushTimer !== null) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      const content = hasMessages ? displayLines.join('\n') : STATUS_TEXT.idle;
+      setDisplay(content).catch((err) => console.error('[Bridge] Display error:', err));
+    }, FLUSH_DEBOUNCE_MS);
   }
 
-  function enqueue(msg: ChatMessage): void {
-    if (queue.length >= MAX_QUEUE) queue.shift();
-    queue.push(msg);
-    if (!ticking) tick();
+  function addMessage(msg: ChatMessage): void {
+    hasMessages = true;
+    const newLines = formatMessage(msg);
+    displayLines.push(...newLines);
+    while (displayLines.length > MAX_VISIBLE_LINES) displayLines.shift();
+    scheduleFlush();
   }
+
+  function showStatus(s: StreamStatus): void {
+    if (hasMessages) return;
+    setDisplay(STATUS_TEXT[s]).catch(console.error);
+  }
+
+  // ── SSE connection to Express backend ────────────────────────────────────
 
   function connectSSE(): void {
     const evtSource = new EventSource('/api/events');
+
     evtSource.onmessage = (e: MessageEvent<string>) => {
       let data: Record<string, unknown>;
       try { data = JSON.parse(e.data); } catch { return; }
+
       if (data['type'] === 'status') {
-        const s = data['status'] as StreamStatus;
-        if (!ticking) setDisplay(STATUS_TEXT[s] ?? STATUS_TEXT.idle).catch(console.error);
+        showStatus(data['status'] as StreamStatus);
         return;
       }
       if (data['id'] && data['author'] && data['text']) {
-        enqueue(data as unknown as ChatMessage);
+        addMessage(data as unknown as ChatMessage);
       }
     };
+
     evtSource.onerror = () => {
       console.error('[SSE] Connection lost — retrying in 5 s');
       evtSource.close();
-      if (!ticking) setDisplay('Connection lost.\nRetrying...').catch(console.error);
+      if (!hasMessages) setDisplay('Connection lost.\nRetrying...').catch(console.error);
       setTimeout(connectSSE, 5000);
     };
   }
